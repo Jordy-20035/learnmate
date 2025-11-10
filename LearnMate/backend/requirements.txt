@@ -1,0 +1,29 @@
+# Core Backend
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+
+
+
+# File Processing
+PyPDF2
+pdfplumber
+python-docx
+python-pptx
+nbformat
+ipython
+
+# YouTube Transcription
+youtube-transcript-api
+openai-whisper
+pytube
+yt-dlp
+
+# Development 
+pytest
+httpx
+
+gunicorn
+python-jose
+passlib

@@ -1,0 +1,10 @@
+python-telegram-bot
+requests
+python-dotenv
+redis
+numpy
+python-multipart
+aiohttp
+pdfminer.six
+pytube
+yt-dlp
