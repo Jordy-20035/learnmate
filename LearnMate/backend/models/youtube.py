@@ -55,25 +55,34 @@ class YouTubeTranscriber:
                 subtitles = info.get("subtitles", {})
                 auto_captions = info.get("automatic_captions", {})
                 
+                # Preferred formats in order (vtt is easiest to parse, json3 as fallback)
+                preferred_formats = ["vtt", "srv1", "srv2", "srv3", "ttml", "json3"]
+                
                 # Priority: ru manual > ru auto > en manual > en auto
                 for lang in ["ru", "en", "uk"]:
                     # Check manual subtitles first
                     if lang in subtitles:
-                        for fmt in subtitles[lang]:
-                            if fmt.get("ext") in ["vtt", "srv1", "srv2", "srv3", "ttml", "json3"]:
-                                caption_url = fmt.get("url")
-                                if caption_url:
-                                    logger.info(f"Found manual {lang} subtitles")
-                                    return self._download_and_parse_captions(caption_url, lang)
+                        for preferred_ext in preferred_formats:
+                            for fmt in subtitles[lang]:
+                                if fmt.get("ext") == preferred_ext:
+                                    caption_url = fmt.get("url")
+                                    if caption_url:
+                                        logger.info(f"Found manual {lang} subtitles (format: {preferred_ext})")
+                                        result = self._download_and_parse_captions(caption_url, lang, preferred_ext)
+                                        if result:
+                                            return result
                     
                     # Check auto-generated captions
                     if lang in auto_captions:
-                        for fmt in auto_captions[lang]:
-                            if fmt.get("ext") in ["vtt", "srv1", "srv2", "srv3", "ttml", "json3"]:
-                                caption_url = fmt.get("url")
-                                if caption_url:
-                                    logger.info(f"Found auto-generated {lang} captions")
-                                    return self._download_and_parse_captions(caption_url, lang)
+                        for preferred_ext in preferred_formats:
+                            for fmt in auto_captions[lang]:
+                                if fmt.get("ext") == preferred_ext:
+                                    caption_url = fmt.get("url")
+                                    if caption_url:
+                                        logger.info(f"Found auto-generated {lang} captions (format: {preferred_ext})")
+                                        result = self._download_and_parse_captions(caption_url, lang, preferred_ext)
+                                        if result:
+                                            return result
                 
                 logger.info("No suitable captions found")
                 return None
@@ -82,10 +91,11 @@ class YouTubeTranscriber:
             logger.warning(f"Failed to fetch YouTube captions: {e}")
             return None
 
-    def _download_and_parse_captions(self, caption_url: str, lang: str) -> dict | None:
+    def _download_and_parse_captions(self, caption_url: str, lang: str, fmt: str) -> dict | None:
         """Download and parse caption file"""
         try:
             import urllib.request
+            import json
             
             req = urllib.request.Request(
                 caption_url,
@@ -95,37 +105,12 @@ class YouTubeTranscriber:
             with urllib.request.urlopen(req, timeout=30) as response:
                 content = response.read().decode("utf-8")
             
-            # Parse VTT/SRV format - extract text only
-            lines = content.split("\n")
-            text_lines = []
-            
-            for line in lines:
-                line = line.strip()
-                # Skip timing lines, headers, and empty lines
-                if not line:
-                    continue
-                if line.startswith("WEBVTT"):
-                    continue
-                if "-->" in line:  # Timing line
-                    continue
-                if re.match(r"^\d+$", line):  # Line numbers
-                    continue
-                if line.startswith("Kind:") or line.startswith("Language:"):
-                    continue
-                # Remove HTML tags like <c>, </c>, <00:00:00.000>
-                clean_line = re.sub(r"<[^>]+>", "", line)
-                if clean_line.strip():
-                    text_lines.append(clean_line.strip())
-            
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_lines = []
-            for line in text_lines:
-                if line not in seen:
-                    seen.add(line)
-                    unique_lines.append(line)
-            
-            text = " ".join(unique_lines)
+            # Handle JSON3 format (YouTube's native JSON format)
+            if fmt == "json3" or content.strip().startswith("{"):
+                text = self._parse_json3_captions(content)
+            else:
+                # Parse VTT/SRV/TTML format - extract text only
+                text = self._parse_vtt_captions(content)
             
             if text and len(text) > 50:
                 logger.info(f"✅ Extracted {len(text)} characters from YouTube captions")
@@ -141,6 +126,67 @@ class YouTubeTranscriber:
         except Exception as e:
             logger.warning(f"Failed to parse captions: {e}")
             return None
+
+    def _parse_json3_captions(self, content: str) -> str:
+        """Parse YouTube's JSON3 caption format"""
+        import json
+        try:
+            data = json.loads(content)
+            text_parts = []
+            
+            # JSON3 format has events with segs containing utf8 text
+            events = data.get("events", [])
+            for event in events:
+                segs = event.get("segs", [])
+                for seg in segs:
+                    utf8_text = seg.get("utf8", "")
+                    if utf8_text and utf8_text.strip() and utf8_text != "\n":
+                        text_parts.append(utf8_text.strip())
+            
+            # Join and clean up
+            text = " ".join(text_parts)
+            # Remove multiple spaces
+            text = re.sub(r"\s+", " ", text)
+            return text.strip()
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON3: {e}")
+            return ""
+
+    def _parse_vtt_captions(self, content: str) -> str:
+        """Parse VTT/SRV/TTML caption format"""
+        lines = content.split("\n")
+        text_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            # Skip timing lines, headers, and empty lines
+            if not line:
+                continue
+            if line.startswith("WEBVTT"):
+                continue
+            if "-->" in line:  # Timing line
+                continue
+            if re.match(r"^\d+$", line):  # Line numbers
+                continue
+            if line.startswith("Kind:") or line.startswith("Language:"):
+                continue
+            if line.startswith("<?xml") or line.startswith("<tt") or line.startswith("</tt"):
+                continue
+            # Remove HTML/XML tags like <c>, </c>, <00:00:00.000>
+            clean_line = re.sub(r"<[^>]+>", "", line)
+            if clean_line.strip():
+                text_lines.append(clean_line.strip())
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_lines = []
+        for line in text_lines:
+            if line not in seen:
+                seen.add(line)
+                unique_lines.append(line)
+        
+        return " ".join(unique_lines)
 
     def get_transcript(self, video_url: str) -> dict:
         """Get transcript - tries YouTube captions first, falls back to Whisper"""
