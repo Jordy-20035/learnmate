@@ -43,4 +43,4 @@ class TranslationModel:
 
         except Exception as e:
             logger.error(f"Translation failed: {str(e)}", exc_info=True)
-            return f"⚠️ Translation service unavailable"
+            return f"⚠️ Translation service unavailable: {str(e)}"
